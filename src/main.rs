@@ -1,30 +1,52 @@
-use std::{net::{TcpListener, TcpStream}, io::{BufReader, BufRead, Write}, fs};
+extern crate rust_server;
+
+use std::fs::File;
+use std::io::prelude::*;
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time::Duration;
+
+use rust_server::ThreadPool;
 
 fn main() {
-   let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:8000").unwrap();
+    let pool = ThreadPool::new(4);
 
-   for stream in listener.incoming(){
-    let stream = stream.unwrap();
-    handle_connection(stream);
-   }
+    for stream in listener.incoming().take(2) {
+        let stream = stream.unwrap();
+
+        pool.execute(|| {
+            handle_connection(stream);
+        });
+    }
+
+    println!("Shutting down!");
 }
 
-
 fn handle_connection(mut stream: TcpStream) {
-    let buf_reader = BufReader::new(&mut stream);
-    let request_line = buf_reader.lines().next().unwrap().unwrap();
+    let mut buffer = [0; 512];
 
-    let (status_line, filename) = if request_line == "GET / HTTP/1.1" {
-        ("HTTP/1.1 200 OK", "landing.html")
+    stream.read(&mut buffer).unwrap();
+
+    let get = b"GET / HTTP/1.1\r\n";
+    let sleep = b"GET /sleep HTTP/1.1\r\n";
+
+    let (status, filename) = if buffer.starts_with(get) {
+        ("HTTP/1.1 200 OK", "index.html")
+    } else if buffer.starts_with(sleep) {
+        thread::sleep(Duration::from_secs(5));
+        ("HTTP/1.1 200 OK", "index.html")
     } else {
         ("HTTP/1.1 404 NOT FOUND", "404.html")
     };
 
-    let contents = fs::read_to_string(filename).unwrap();
-    let length = contents.len();
+    let mut file = File::open(filename).unwrap();
+    let mut contents = String::new();
 
-    let response =
-        format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+    file.read_to_string(&mut contents).unwrap();
 
-    stream.write_all(response.as_bytes()).unwrap();
+    let response = format!("{}\r\n\r\n{}", status, contents);
+
+    stream.write(response.as_bytes()).unwrap();
+    stream.flush().unwrap();
 }
